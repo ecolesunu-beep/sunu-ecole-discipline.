@@ -1,0 +1,61 @@
+# Sunu École
+
+Plateforme de suivi disciplinaire multi-établissements. Next.js App Router, PostgreSQL, Drizzle ORM. Aucune donnée élève ou statistique n'est préchargée.
+
+## Démarrer
+
+1. `npm install`
+2. Copier `.env.example` vers `.env` et renseigner `DATABASE_URL`. Pour une base Supabase, ouvrir **Project Settings → Database → Connection string → URI** et coller l'URL **uniquement dans `DATABASE_URL` côté serveur**. Pour le développement local, utiliser une base PostgreSQL locale.
+3. Générer des secrets uniques avec `node -e "const c=require('crypto'); console.log(c.randomBytes(32).toString('base64'))"` deux fois pour `DATA_ENCRYPTION_KEY` et `LOOKUP_KEY`.
+4. Renseigner `NEXT_PUBLIC_APP_URL` avec l'origine publique du site. Aucun service de CAPTCHA ni paire de clés RSA n'est nécessaire. Pour une installation existante, conserver les clés de chiffrement et de recherche d'origine.
+5. Pour une base **Supabase neuve**, exécuter `supabase.sql` dans **Supabase → SQL Editor**. Pour une base locale, utiliser `npx drizzle-kit push`. Le script SQL contient les tables, les index, les contraintes et les politiques RLS. Les évolutions ultérieures se font via Drizzle / migrations.
+6. Configurer `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` et `SMTP_FROM=ecolesunu@gmail.com` pour activer réellement le contact et la récupération de mot de passe. Sans SMTP, ces envois retournent une erreur explicite : aucun email n'est simulé.
+7. `npm run dev` ou `npm run build` puis déployer derrière HTTPS.
+
+## Ouvrir le site et diagnostiquer une page bloquée
+
+Dans l'environnement de prévisualisation géré, utilisez **Prévisualisation** dans la plateforme. L'URL technique du sandbox peut demander un jeton d'accès géré par la plateforme : ce n'est pas une URL de publication à partager.
+
+- Le site public s’ouvre dans l’aperçu intégré. Dans les aperçus gérés autorisés, les rubriques restent dans la même fenêtre ; un autre hôte peut exiger un onglet séparé. Les origines d’aperçu supplémentaires se règlent via `SUNU_PREVIEW_ANCESTORS`. L’encadrement reste interdit en déploiement permanent.
+- Le contrôle d'origine des formulaires tient compte du domaine public, et pas seulement de l'adresse d'écoute interne de Next.js. En production, `NEXT_PUBLIC_APP_URL` doit correspondre exactement au domaine HTTPS de l'application. N'activez `SUNU_TRUST_PROXY=1` que si un proxy contrôlé remplace les en-têtes transmis par le client.
+- **Clés de l’aperçu géré** : les clés de chiffrement et de recherche sont conservées sous `~/.local/state/sunu-ecole` ou `SUNU_STATE_DIR` (fichier privé de mode 0600). Sauvegardez toujours ce volume avec PostgreSQL. La clé historique `instance.env` est réutilisée si elle existe. Si un instantané local restaure les données sans ce fichier, une génération **distincte**, `storage-v2.env`, ne sert qu’aux nouvelles écritures. Elle ne déchiffre pas les anciennes valeurs et ne réécrit aucun compte, aucun index ni aucun dossier existant. Un identifiant de clé dans les nouvelles enveloppes permet de distinguer les générations. En production, cette initialisation automatique est désactivée.
+- **Compte restauré sans ses clés** : sur la connexion, « Avec mon nom et mon établissement » accepte le nom exact du membre, le nom de l’école (ou son code) et le mot de passe habituel. Le serveur vérifie le hachage Argon2id d’un unique compte actif. Il n’identifie jamais une personne par son seul mot de passe et ne rattache jamais une nouvelle adresse automatiquement. Les anciennes coordonnées et pièces chiffrées ne sont pas récupérables sans leur clé. La récupération par e-mail d’un ancien compte nécessite aussi sa clé de recherche. Restaurer `instance.env` à son emplacement d’origine, ou renseigner `PREVIOUS_DATA_ENCRYPTION_KEY` et `PREVIOUS_LOOKUP_KEY` avec les clés d’origine en conservant les clés actuellement utilisées. Redémarrer ensuite le serveur.
+- Pour le déploiement permanent, définissez **`SUNU_ENV=production` avant la compilation et au démarrage**, utilisez le gestionnaire de secrets de l'hébergeur, appliquez le schéma et configurez SMTP. L'exception d'encadrement de l'aperçu est désactivée ; `X-Frame-Options: DENY` et `frame-ancestors 'none'` s'appliquent à toutes les pages.
+- `/api/health` ne retourne 200 que si la base, les tables métier et les clés de chiffrement sont utilisables. Sinon, il renvoie 503 sans exposer de secret. Un test HTTP seul ne suffit pas : vérifier aussi l'ouverture de l'accueil dans le navigateur, la connexion et les quatre menus **Tableau de bord, Élèves, Synthèse, Historique**.
+
+## Données et sécurité
+
+- Une école par compte. Toutes les requêtes métier vérifient `ecole_id` côté API ; les routes ne prennent jamais l'école cible depuis le navigateur.
+- Le mot de passe est choisi librement à l’inscription, dans les paramètres et lors d’une réinitialisation. Seule une valeur non vide est nécessaire, sans critère de longueur ou de composition, score, liste de mots interdits ni restriction de réutilisation. Les espaces et caractères Unicode sont conservés tels quels.
+- Le mot de passe n'expire pas automatiquement et sa modification n'est jamais imposée. Il n'est stocké ni en clair ni dans le navigateur. Le hachage Argon2id avec sel individuel reste compatible avec les comptes existants. La récupération par e-mail conserve son lien personnel à usage unique de 30 minutes (SMTP requis).
+- **Connexion sans cookies.** Le navigateur conserve uniquement un identifiant de session opaque pour le domaine de l’application et l’envoie par l’en-tête `Authorization: Bearer`. Cet identifiant reste disponible entre les onglets et après rechargement ; `sessionStorage` puis la mémoire servent de repli si le stockage persistant est bloqué. Aucun mot de passe ni dossier d’élève n’est stocké dans le navigateur. Côté serveur, seule l’empreinte du jeton est enregistrée : 30 jours avec prolongation pour les sessions actives. Une réponse intermédiaire ou une coupure ne supprime pas la session ; seul le serveur peut la déclarer invalide. La déconnexion, la désactivation et la réinitialisation révoquent les accès concernés. Un autre domaine d’aperçu ou appareil nécessite de se connecter pour cet environnement.
+- Si un relais d’aperçu supprime l’en-tête de session, le navigateur rétablit l’accès automatiquement via une requête POST de même origine. Ce canal est limité aux opérations existantes et conserve la vérification du jeton, des permissions et de l’école. Le jeton ne passe jamais dans les adresses. Une écriture n’est rejouée que si le serveur indique qu’aucune session n’a été reçue avant de la traiter.
+- **Pas de compteur de tentatives**, de verrouillage par compte ou par IP, de limite d'essais, de CAPTCHA ni d'alerte d'échec. Un mot de passe incorrect renvoie uniquement une erreur 401 ; l'utilisateur peut corriger sa saisie immédiatement. Les connexions réussies restent visibles dans l'historique métier. L'absence de limitation rend les mots de passe faciles à deviner plus exposés aux essais automatisés.
+- **Mise à jour d'une instance existante** : une reconnexion est nécessaire. Les anciens cookies et blocages ne sont plus lus. Les comptes, les mots de passe hachés, les écoles et les données restent intacts ; les anciennes tables d'essais sont conservées pour compatibilité sans être utilisées. La table `refresh_sessions` héberge les nouvelles sessions avec des empreintes distinctes de celles de l'ancien mécanisme. Aucune migration destructive n'est requise.
+- Email des comptes, coordonnées parent et photos chiffrés en AES-256-GCM avec des secrets hors dépôt. Images stockées dans PostgreSQL sous forme chiffrée, servies uniquement via URL temporaire signée valable 1h et session autorisée. Pour le moment, elles ne sont **pas** stockées dans Supabase Storage : la sécurité des images ne dépend pas d'un bucket public.
+- Les appels du navigateur utilisent seulement les API Next.js. Si vous branchez `DATABASE_URL` sur Supabase, le schéma SQL active RLS et retire les permissions REST directes. Les politiques `auth.uid()` sont une défense pour un éventuel client Supabase Auth futur ; l'authentification en cours est personnalisée, donc l'isolation **effective** passe par les filtres et permissions côté serveur. Ne pas exposer la connexion PostgreSQL au navigateur.
+- PostgreSQL `LISTEN/NOTIFY` alimente les notifications temps réel entre membres de la même école ; relecture toutes les 4 secondes en secours. Aucune donnée métier n'est gardée seulement dans localStorage. En cas de coupure, la consultation des données déjà présentes en mémoire reste possible et une synchronisation reprend au retour de la connexion ; les écritures hors-ligne sont désactivées plutôt que prétendument enregistrées.
+- En production : configurer un proxy HTTPS avec TLS 1.2+, HSTS et une politique de sauvegardes régulières. Les en-têtes CSP et autres en-têtes de sécurité sont définis dans `next.config.ts`.
+
+## Visuels et fichiers d'origine
+
+Le dépôt fourni ne contenait **ni le HTML du portfolio, ni le logo final, ni les photos promises**. Les fichiers `public/brand-s.svg` et `public/brand-s-light.svg` sont des **substituts temporaires**, pas les originaux. Remplacez-les par les variantes originales du logo (en conservant ces noms), puis adaptez `src/lib/pdf.ts` si leur format diffère. Les neuf photographies d'illustration sont embarquées dans `public/images` et référencées par `src/lib/media.ts`. Elles ne dépendent d'aucun service externe après le déploiement. Les personnes sur les images ne sont pas des utilisateurs de la plateforme.
+
+## Test de non-régression dans le navigateur
+
+`scripts/verify-browser.cjs` utilise Chromium pour vérifier l'aperçu intégré, le menu public, la navigation dans l’aperçu autorisé et l'absence de loader bloquant. Les commandes de lancement sont indiquées au début du script. En activant `SUNU_E2E_WRITE=1` **sur une base locale uniquement**, le test ajoute une école éphémère, importe un véritable classeur avec doublon, fait rejoindre un second surveillant, vérifie une saisie partagée, les quatre pages de suivi, le PDF et le menu mobile. Seules les données de cette école sont effacées en fin de test.
+
+Le test `SUNU_E2E_WRITE=1 node scripts/verify-password-choice.cjs` vérifie aussi la connexion sans cookies, les erreurs successives sans verrouillage, le changement et la récupération du mot de passe ainsi que la révocation des sessions. Il crée et retire uniquement ses propres données temporaires dans la base locale.
+
+## Où trouver les pages après la connexion ?
+
+**Accueil → Espace école** (`/espace-ecole`) présente les huit rubriques et leurs liens, sans exposer de données privées. Les cartes de la page Fonctionnalités sont également reliées aux modules. `/connexion` et `/login` conduisent au même formulaire.
+
+- Une connexion ordinaire ouvre `/dashboard`. Son bloc **Mes rubriques** et le menu de gauche donnent accès aux pages autorisées. Sur téléphone, la barre du bas propose le tableau de bord, le journal, les élèves et le bouton **Pages** pour ouvrir le menu complet.
+- Si vous choisissez une rubrique avant de vous connecter, elle est conservée pendant la connexion. Seuls les chemins de l’application et leurs paramètres prévus sont acceptés. Un membre sans la permission requise est orienté vers ses propres rubriques. Le serveur continue de contrôler chaque opération.
+- La création d’un établissement ouvre la configuration initiale ; **Ouvrir le tableau de bord** permet de passer cette étape. Les élèves sont accessibles dans `/eleves`, et un clic sur un nom ouvre la fiche individuelle. La gestion des utilisateurs est réservée au Surveillant Général.
+- La session est retrouvée dans le même navigateur et sur le même domaine. **Mon tableau de bord** permet de reprendre le travail. Sans session, une rubrique affiche un accès local plutôt que de renvoyer automatiquement au formulaire.
+
+## Parcours
+
+Créez un compte et une école dans `/inscription`, complétez `/onboarding`, importez les élèves dans `/eleves`, partagez le code d'établissement avec l'équipe, puis utilisez `/journal`, `/synthese`, `/fiche-renvoi` et `/historique`. Chaque route dispose de son propre contenu et les menus utilisent la navigation client Next.js.
